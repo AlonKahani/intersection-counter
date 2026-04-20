@@ -135,13 +135,22 @@
     // Rate limit: minimum 3 seconds between queries to respect Overpass fair use
     let lastQueryTime = 0;
     const MIN_INTERVAL_MS = 3000;
+    const MAX_AREA_KM2 = 25;
 
     function runCount(bounds) {
+      const statusEl = document.getElementById('status');
+      const area = bboxAreaKm2(bounds);
+
+      if (area > MAX_AREA_KM2) {
+        statusEl.innerHTML = `<span class="error">&#9888; Area too large (${area.toFixed(1)} km²). Max ${MAX_AREA_KM2} km² — try a smaller rectangle.</span>`;
+        document.getElementById('result').style.display = 'none';
+        return;
+      }
+
       const now = Date.now();
       const wait = Math.max(0, lastQueryTime + MIN_INTERVAL_MS - now);
       lastQueryTime = now + wait;
       if (wait > 0) {
-        const statusEl = document.getElementById('status');
         statusEl.textContent = `Rate-limiting... waiting ${(wait / 1000).toFixed(1)}s`;
         setTimeout(() => countIntersections(bounds), wait);
       } else {
@@ -173,9 +182,8 @@
     }
 
     const OVERPASS_ENDPOINTS = [
+      'https://z.overpass-api.de/api/interpreter',
       'https://overpass-api.de/api/interpreter',
-      'https://overpass.karte.io/api/interpreter',
-      'https://overpass.openstreetmap.ru/api/interpreter',
     ];
 
     function xhrGet(url) {
