@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Intersection Counter</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { height: 100vh; width: 100vw; }
+
+    #panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      z-index: 1000;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      width: 240px;
+    }
+
+    #panel h2 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #111;
+    }
+
+    #panel p.hint {
+      font-size: 0.8rem;
+      color: #666;
+      line-height: 1.4;
+      margin-bottom: 14px;
+    }
+
+    #result {
+      border-top: 1px solid #eee;
+      padding-top: 14px;
+      display: none;
+    }
+
+    #result .label {
+      font-size: 0.75rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    #result .count {
+      font-size: 2.5rem;
+      font-weight: 800;
+      color: #1a56db;
+      line-height: 1.1;
+    }
+
+    #result .sub {
+      font-size: 0.8rem;
+      color: #555;
+      margin-top: 4px;
+    }
+
+    #status {
+      font-size: 0.82rem;
+      color: #555;
+      min-height: 20px;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #ccc;
+      border-top-color: #1a56db;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error { color: #c0392b; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="panel">
+    <h2>Intersection Counter</h2>
+    <p class="hint">Use the rectangle tool (top-left of map) to draw an area. Road intersections inside will be counted.</p>
+    <div id="status">Waiting for selection...</div>
+    <div id="result">
+      <div class="label">Intersections found</div>
+      <div class="count" id="count">—</div>
+      <div class="sub" id="sub"></div>
+      <div class="label" style="margin-top:14px">Density</div>
+      <div class="count" id="density" style="font-size:1.6rem;color:#0f766e">—</div>
+      <div class="sub" id="area"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script>
+    // Default view: Tel Aviv
+    const map = L.map('map').setView([32.08, 34.78], 14);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    // Layer to hold drawn shapes
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    // Draw control — rectangle only
+    const drawControl = new L.Control.Draw({
+      draw: {
+        rectangle: { shapeOptions: { color: '#1a56db', weight: 2 } },
+        polygon: false,
+        polyline: false,
+        circle: false,
+        circlemarker: false,
+        marker: false
+      },
+      edit: { featureGroup: drawnItems }
+    });
+    map.addControl(drawControl);
+
+    // Rate limit: minimum 3 seconds between queries to respect Overpass fair use
+    let lastQueryTime = 0;
+    const MIN_INTERVAL_MS = 3000;
+
+    function runCount(bounds) {
+      const now = Date.now();
+      const wait = Math.max(0, lastQueryTime + MIN_INTERVAL_MS - now);
+      lastQueryTime = now + wait;
+      if (wait > 0) {
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = `Rate-limiting... waiting ${(wait / 1000).toFixed(1)}s`;
+        setTimeout(() => countIntersections(bounds), wait);
+      } else {
+        countIntersections(bounds);
+      }
+    }
+
+    map.on(L.Draw.Event.CREATED, (e) => {
+      drawnItems.clearLayers();
+      drawnItems.addLayer(e.layer);
+      runCount(e.layer.getBounds());
+    });
+
+    // Re-run when rectangle is edited
+    map.on(L.Draw.Event.EDITED, (e) => {
+      e.layers.eachLayer((layer) => {
+        runCount(layer.getBounds());
+      });
+    });
+
+    // Calculate area of bounding box in km² using haversine via Leaflet
+    function bboxAreaKm2(bounds) {
+      const sw = bounds.getSouthWest();
+      const se = bounds.getSouthEast();
+      const nw = bounds.getNorthWest();
+      const widthM  = sw.distanceTo(se);
+      const heightM = sw.distanceTo(nw);
+      return (widthM * heightM) / 1_000_000;
+    }
+
+    const OVERPASS_ENDPOINTS = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.karte.io/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter',
+    ];
+
+    function xhrGet(url) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url);
+        xhr.timeout = 30000;
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch (e) { reject(new Error('Invalid JSON')); }
+          } else {
+            reject(new Error(`HTTP ${xhr.status}`));
+          }
+        };
+        xhr.onerror   = () => reject(new Error('Network error (XHR)'));
+        xhr.ontimeout = () => reject(new Error('Timeout (XHR)'));
+        xhr.send();
+      });
+    }
+
+    async function fetchOverpass(query, logEl) {
+      const log = (msg) => { logEl.textContent = msg; console.log(msg); };
+      const errors = [];
+
+      for (const endpoint of OVERPASS_ENDPOINTS) {
+        const url = endpoint + '?data=' + encodeURIComponent(query);
+        log(`Trying ${endpoint}...`);
+        // Try fetch first
+        try {
+          const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return await response.json();
+        } catch (err) {
+          errors.push(`fetch ${endpoint}: ${err.message}`);
+          console.warn(err.message);
+        }
+        // Try XHR fallback
+        try {
+          return await xhrGet(url);
+        } catch (err) {
+          errors.push(`xhr ${endpoint}: ${err.message}`);
+          console.warn(err.message);
+        }
+      }
+
+      // Last resort: CORS proxy
+      log('Trying CORS proxy...');
+      try {
+        const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(
+          OVERPASS_ENDPOINTS[0] + '?data=' + encodeURIComponent(query)
+        );
+        const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(30000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+      } catch (err) {
+        errors.push(`corsproxy: ${err.message}`);
+      }
+
+      throw new Error('All attempts failed:\n' + errors.join('\n'));
+    }
+
+    async function countIntersections(bounds) {
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      const countEl  = document.getElementById('count');
+      const subEl    = document.getElementById('sub');
+
+      resultEl.style.display = 'none';
+      statusEl.innerHTML = '<span class="spinner"></span>Connecting...';
+
+      const s = bounds.getSouth().toFixed(6);
+      const w = bounds.getWest().toFixed(6);
+      const n = bounds.getNorth().toFixed(6);
+      const e = bounds.getEast().toFixed(6);
+
+      // Query all road ways in the bounding box (excludes footways, steps, etc.)
+      const query = `[out:json][timeout:30][bbox:${s},${w},${n},${e}];way[highway][highway!~"footway|cycleway|path|steps|service|track|proposed|construction"];out body;`;
+
+      try {
+        const data = await fetchOverpass(query, statusEl);
+
+        // Count how many ways each node appears in
+        const nodeCount = {};
+        let wayCount = 0;
+        for (const el of data.elements) {
+          if (el.type === 'way' && el.nodes) {
+            wayCount++;
+            for (const nodeId of el.nodes) {
+              nodeCount[nodeId] = (nodeCount[nodeId] || 0) + 1;
+            }
+          }
+        }
+
+        // A node shared by 2+ ways is an intersection
+        const intersections = Object.values(nodeCount).filter(c => c >= 2).length;
+        const areaKm2 = bboxAreaKm2(bounds);
+        const density = intersections / areaKm2;
+
+        statusEl.textContent = 'Done.';
+        countEl.textContent  = intersections.toLocaleString();
+        subEl.textContent    = `across ${wayCount.toLocaleString()} road segments`;
+
+        document.getElementById('density').textContent = density.toFixed(1) + ' / km²';
+        document.getElementById('area').textContent    = `area: ${areaKm2.toFixed(3)} km²`;
+
+        resultEl.style.display = 'block';
+
+      } catch (err) {
+        statusEl.innerHTML = `<span class="error">&#9888; ${err.message}</span>`;
+      }
+    }
+  </script>
+</body>
+</html>
