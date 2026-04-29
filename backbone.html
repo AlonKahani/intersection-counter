@@ -70,7 +70,56 @@
       color: var(--text-muted);
       line-height: 1.5;
       margin-top: 6px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
+    }
+
+    .metric-selector {
+      margin-bottom: 8px;
+    }
+    .metric-selector label {
+      display: block;
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    .metric-selector select {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 30px;
+    }
+    .metric-selector select:hover,
+    .metric-selector select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+
+    .metric-desc {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 12px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border-left: 3px solid var(--primary);
+      border-radius: 0 6px 6px 0;
     }
 
     #status {
@@ -209,8 +258,22 @@
   <div id="map"></div>
 
   <div id="panel">
-    <h2>Street Backbone</h2>
-    <p class="hint">Streets carrying the most shortest paths between random points within the area. Draw a rectangle or polygon (≤2 km²) to analyze.</p>
+    <h2>Street Network Analysis</h2>
+    <p class="hint">Draw a rectangle or polygon (≤2 km²) to analyze street network metrics from OpenStreetMap.</p>
+
+    <div class="metric-selector">
+      <label for="metric-select">Analysis</label>
+      <select id="metric-select">
+        <option value="betweenness">Edge betweenness</option>
+        <option value="closeness">Closeness</option>
+        <option value="degree">Degree</option>
+        <option value="straightness">Straightness</option>
+      </select>
+    </div>
+    <div class="metric-desc" id="metric-desc">
+      Streets carrying the most shortest paths between random points — the network's "main arteries".
+    </div>
+
     <div id="status">Waiting for selection...</div>
 
     <div id="result">
@@ -224,11 +287,11 @@
           <div class="value" id="stat-edges">—</div>
         </div>
         <div class="stat-cell">
-          <div class="label">Mean BC</div>
+          <div class="label">Mean</div>
           <div class="value" id="stat-mean">—</div>
         </div>
         <div class="stat-cell">
-          <div class="label">Max BC</div>
+          <div class="label">Max</div>
           <div class="value" id="stat-max">—</div>
         </div>
       </div>
@@ -239,7 +302,7 @@
       </div>
 
       <div class="legend">
-        <div class="label">Edge betweenness (quantile)</div>
+        <div class="label" id="legend-label">Edge betweenness (quantile)</div>
         <div class="legend-bar" id="legend-bar"></div>
         <div class="legend-ticks" id="legend-ticks">
           <span>—</span><span>—</span><span>—</span><span>—</span><span>—</span>
@@ -396,6 +459,150 @@
       throw new Error('Overpass unavailable: ' + errors.join('; '));
     }
 
+    /* ===== Metric registry ===== */
+    const METRICS = {
+      betweenness: {
+        label: 'Edge betweenness',
+        legend: 'Edge betweenness (quantile)',
+        description: 'Streets carrying the most shortest paths between random points — the network\'s "main arteries".',
+        compute: (graph) => brandesEdgeBC(graph),
+        kind: 'edge'
+      },
+      closeness: {
+        label: 'Closeness',
+        legend: 'Closeness × 1000 (quantile)',
+        description: 'Most accessible intersections — those with the lowest average travel distance to all others. Inverse of mean shortest-path distance.',
+        compute: (graph) => closenessCentrality(graph),
+        kind: 'node'
+      },
+      degree: {
+        label: 'Degree',
+        legend: 'Degree (number of streets)',
+        description: 'Local connectivity — how many streets meet at each intersection. Highest values mark the most-connected junctions.',
+        compute: (graph) => degreeCentrality(graph),
+        kind: 'node'
+      },
+      straightness: {
+        label: 'Straightness',
+        legend: 'Straightness (0–1, quantile)',
+        description: 'How direct routes are. High = the shortest network path closely follows the crow-flight line. Low = winding, indirect connectivity.',
+        compute: (graph) => straightnessCentrality(graph),
+        kind: 'node'
+      }
+    };
+
+    /* ===== State / cache ===== */
+    let cache = null; // { shapeKey, graph, fetchTime, buildTime }
+
+    function shapeKey(latlngs) {
+      return latlngs.map(p => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`).join('|');
+    }
+
+    function activeMetric() {
+      return document.getElementById('metric-select').value;
+    }
+
+    /* ===== Metric implementations ===== */
+
+    function buildAdjacency(graph) {
+      const adj = new Map();
+      for (const node of graph.nodes) adj.set(node, []);
+      for (const e of graph.edges) {
+        adj.get(e.startNode).push({ target: e.endNode, weight: e.length });
+        adj.get(e.endNode).push({ target: e.startNode, weight: e.length });
+      }
+      return adj;
+    }
+
+    function dijkstra(source, adj, nodeArr) {
+      const dist = new Map();
+      for (const v of nodeArr) dist.set(v, Infinity);
+      dist.set(source, 0);
+      const heap = new MinHeap();
+      heap.push([0, source]);
+      while (heap.size > 0) {
+        const [d, v] = heap.pop();
+        if (d > dist.get(v)) continue;
+        for (const { target, weight } of adj.get(v)) {
+          const nd = d + weight;
+          if (nd < dist.get(target)) {
+            dist.set(target, nd);
+            heap.push([nd, target]);
+          }
+        }
+      }
+      return dist;
+    }
+
+    function degreeCentrality(graph) {
+      const result = new Map();
+      for (const node of graph.nodes) result.set(node, 0);
+      for (const e of graph.edges) {
+        result.set(e.startNode, result.get(e.startNode) + 1);
+        result.set(e.endNode, result.get(e.endNode) + 1);
+      }
+      return result;
+    }
+
+    function closenessCentrality(graph) {
+      const adj = buildAdjacency(graph);
+      const nodeArr = Array.from(graph.nodes);
+      const result = new Map();
+      for (const s of nodeArr) {
+        const dist = dijkstra(s, adj, nodeArr);
+        let sumDist = 0, reachable = 0;
+        for (const v of nodeArr) {
+          if (v !== s && dist.get(v) < Infinity) {
+            sumDist += dist.get(v);
+            reachable++;
+          }
+        }
+        // Wasserman–Faust closeness, scaled ×1000 for readable values (m → ~1/km)
+        if (sumDist > 0) {
+          const wf = (reachable / (nodeArr.length - 1)) * (reachable / sumDist);
+          result.set(s, wf * 1000);
+        } else {
+          result.set(s, 0);
+        }
+      }
+      return result;
+    }
+
+    function straightnessCentrality(graph) {
+      const adj = buildAdjacency(graph);
+      const nodeArr = Array.from(graph.nodes);
+      const result = new Map();
+      for (const s of nodeArr) {
+        const dist = dijkstra(s, adj, nodeArr);
+        const sCoord = graph.coords.get(s);
+        let sumRatio = 0, reachable = 0;
+        for (const v of nodeArr) {
+          if (v === s) continue;
+          const d = dist.get(v);
+          if (d < Infinity && d > 0) {
+            const vCoord = graph.coords.get(v);
+            if (sCoord && vCoord) {
+              const euclid = haversine(sCoord, vCoord);
+              sumRatio += euclid / d;
+              reachable++;
+            }
+          }
+        }
+        result.set(s, reachable > 0 ? sumRatio / reachable : 0);
+      }
+      return result;
+    }
+
+    function nodeMetricToEdge(nodeValues, edges) {
+      const result = new Map();
+      for (const e of edges) {
+        const a = nodeValues.get(e.startNode) || 0;
+        const b = nodeValues.get(e.endNode) || 0;
+        result.set(e.id, (a + b) / 2);
+      }
+      return result;
+    }
+
     /* ===== Pipeline ===== */
     async function analyze(latlngs) {
       const statusEl = document.getElementById('status');
@@ -403,46 +610,84 @@
       resultEl.style.display = 'none';
 
       try {
-        const polyStr = latlngs
-          .map(p => `${p.lat.toFixed(6)} ${p.lng.toFixed(6)}`)
-          .join(' ');
-        const query = `[out:json][timeout:30];way[highway][highway!~"footway|cycleway|path|steps|service|track|proposed|construction"](poly:"${polyStr}");out geom;`;
+        const key = shapeKey(latlngs);
+        let fetchTime = 0, buildTime = 0;
 
-        const t0 = performance.now();
-        const data = await fetchOverpass(query, statusEl);
-        const fetchTime = performance.now() - t0;
+        // Reuse cache if same shape
+        if (!cache || cache.shapeKey !== key) {
+          const polyStr = latlngs
+            .map(p => `${p.lat.toFixed(6)} ${p.lng.toFixed(6)}`)
+            .join(' ');
+          const query = `[out:json][timeout:30];way[highway][highway!~"footway|cycleway|path|steps|service|track|proposed|construction"](poly:"${polyStr}");out geom;`;
 
-        statusEl.innerHTML = '<span class="spinner"></span>Building graph...';
-        await new Promise(r => setTimeout(r, 0));
-        const t1 = performance.now();
-        const graph = buildPrimalGraph(data.elements);
-        const buildTime = performance.now() - t1;
+          const t0 = performance.now();
+          const data = await fetchOverpass(query, statusEl);
+          fetchTime = performance.now() - t0;
 
-        if (graph.nodes.size === 0) {
-          statusEl.innerHTML = '<span class="error">No road network found in the area.</span>';
-          return;
+          statusEl.innerHTML = '<span class="spinner"></span>Building graph...';
+          await new Promise(r => setTimeout(r, 0));
+          const t1 = performance.now();
+          const graph = buildPrimalGraph(data.elements);
+          buildTime = performance.now() - t1;
+
+          if (graph.nodes.size === 0) {
+            statusEl.innerHTML = '<span class="error">No road network found in the area.</span>';
+            cache = null;
+            return;
+          }
+          if (graph.nodes.size > MAX_NODES) {
+            statusEl.innerHTML = `<span class="error">&#9888; Too many intersections (${graph.nodes.size} > ${MAX_NODES}). Try a smaller area.</span>`;
+            cache = null;
+            return;
+          }
+
+          cache = { shapeKey: key, graph, fetchTime, buildTime };
         }
 
-        if (graph.nodes.size > MAX_NODES) {
-          statusEl.innerHTML = `<span class="error">&#9888; Too many intersections (${graph.nodes.size} > ${MAX_NODES}). Try a smaller area.</span>`;
-          return;
-        }
-
-        statusEl.innerHTML = `<span class="spinner"></span>Computing betweenness for ${graph.nodes.size} nodes...`;
-        await new Promise(r => setTimeout(r, 50));
-        const t2 = performance.now();
-        const edgeBC = brandesEdgeBC(graph);
-        const computeTime = performance.now() - t2;
-
-        renderEdges(graph.edges, edgeBC);
-        showStats(graph, edgeBC, fetchTime, buildTime, computeTime);
-        statusEl.textContent = `Done. ${graph.nodes.size} nodes, ${graph.edges.length} edges.`;
-        resultEl.style.display = 'block';
+        await computeAndRender(statusEl, resultEl, fetchTime, buildTime);
       } catch (err) {
         statusEl.innerHTML = `<span class="error">&#9888; ${err.message}</span>`;
         console.error(err);
       }
     }
+
+    async function computeAndRender(statusEl, resultEl, fetchTime, buildTime) {
+      const { graph } = cache;
+      const metricKey = activeMetric();
+      const metric = METRICS[metricKey];
+
+      statusEl.innerHTML = `<span class="spinner"></span>Computing ${metric.label.toLowerCase()} for ${graph.nodes.size} nodes...`;
+      await new Promise(r => setTimeout(r, 50));
+
+      const t2 = performance.now();
+      const raw = metric.compute(graph);
+      const computeTime = performance.now() - t2;
+
+      const edgeValues = metric.kind === 'edge'
+        ? raw
+        : nodeMetricToEdge(raw, graph.edges);
+
+      edgesLayer.clearLayers();
+      renderEdges(graph.edges, edgeValues);
+      showStats(graph, edgeValues, fetchTime, buildTime, computeTime, metric);
+
+      statusEl.textContent = `Done. ${graph.nodes.size} nodes, ${graph.edges.length} edges.`;
+      resultEl.style.display = 'block';
+    }
+
+    /* ===== Metric selector wiring ===== */
+    document.getElementById('metric-select').addEventListener('change', async () => {
+      const metricKey = activeMetric();
+      document.getElementById('metric-desc').textContent = METRICS[metricKey].description;
+
+      // Recompute on cached graph if available
+      if (cache && cache.graph) {
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+        // Use 0 for fetch/build times when reusing cache
+        await computeAndRender(statusEl, resultEl, 0, 0);
+      }
+    });
 
     /* ===== Primal graph: intersections + endpoints as nodes, segments as edges ===== */
     function buildPrimalGraph(elements) {
@@ -450,12 +695,15 @@
         e.type === 'way' && e.geometry && e.nodes && e.nodes.length >= 2
       );
 
-      // Count node appearances; mark endpoints
+      // Count node appearances; mark endpoints; index node coordinates
       const nodeWayCount = new Map();
       const endpoints = new Set();
+      const nodeCoords = new Map(); // osmNodeId -> {lat, lon}
       for (const w of ways) {
-        for (const id of w.nodes) {
+        for (let i = 0; i < w.nodes.length; i++) {
+          const id = w.nodes[i];
           nodeWayCount.set(id, (nodeWayCount.get(id) || 0) + 1);
+          if (!nodeCoords.has(id)) nodeCoords.set(id, w.geometry[i]);
         }
         endpoints.add(w.nodes[0]);
         endpoints.add(w.nodes[w.nodes.length - 1]);
@@ -533,7 +781,13 @@
         validNodes.has(e.startNode) && validNodes.has(e.endNode)
       );
 
-      return { nodes: validNodes, edges: validEdges };
+      // Trim coords to only nodes in the valid graph
+      const validCoords = new Map();
+      for (const n of validNodes) {
+        if (nodeCoords.has(n)) validCoords.set(n, nodeCoords.get(n));
+      }
+
+      return { nodes: validNodes, edges: validEdges, coords: validCoords };
     }
 
     /* ===== Min-heap for Dijkstra ===== */
@@ -664,16 +918,17 @@
       return 4;
     }
 
-    function renderEdges(edges, edgeBC) {
-      const values = Array.from(edgeBC.values()).sort((a, b) => a - b);
+    function renderEdges(edges, edgeValues) {
+      const values = Array.from(edgeValues.values()).sort((a, b) => a - b);
       const n = colors.length;
       stops = [];
       for (let i = 0; i <= n; i++) {
         stops.push(values[Math.floor(i * (values.length - 1) / n)]);
       }
 
+      const metricLabel = METRICS[activeMetric()].label;
       for (const e of edges) {
-        const v = edgeBC.get(e.id);
+        const v = edgeValues.get(e.id);
         const polyline = L.polyline(
           e.geometry.map(p => [p.lat, p.lon]),
           {
@@ -683,25 +938,39 @@
             lineCap: 'round'
           }
         ).bindTooltip(
-          `<strong>${e.name || '(unnamed)'}</strong><br>Betweenness: ${v.toFixed(2)}<br>Length: ${e.length.toFixed(0)} m`
+          `<strong>${e.name || '(unnamed)'}</strong><br>${metricLabel}: ${formatMetricValue(v)}<br>Length: ${e.length.toFixed(0)} m`
         );
         edgesLayer.addLayer(polyline);
       }
     }
 
-    function showStats(graph, edgeBC, fetchTime, buildTime, computeTime) {
-      const values = Array.from(edgeBC.values()).sort((a, b) => a - b);
+    // Format a metric value with sensible precision based on its magnitude
+    function formatMetricValue(v) {
+      const abs = Math.abs(v);
+      if (abs === 0) return '0';
+      if (abs >= 100) return v.toFixed(0);
+      if (abs >= 10)  return v.toFixed(1);
+      if (abs >= 1)   return v.toFixed(2);
+      if (abs >= 0.01) return v.toFixed(3);
+      return v.toExponential(1);
+    }
+
+    function showStats(graph, edgeValues, fetchTime, buildTime, computeTime, metric) {
+      const values = Array.from(edgeValues.values()).sort((a, b) => a - b);
       const sum = values.reduce((a, b) => a + b, 0);
       const mean = sum / values.length;
       const max = values[values.length - 1];
 
       document.getElementById('stat-nodes').textContent = graph.nodes.size.toLocaleString();
       document.getElementById('stat-edges').textContent = graph.edges.length.toLocaleString();
-      document.getElementById('stat-mean').textContent  = mean.toFixed(1);
-      document.getElementById('stat-max').textContent   = max.toFixed(1);
+      document.getElementById('stat-mean').textContent  = formatMetricValue(mean);
+      document.getElementById('stat-max').textContent   = formatMetricValue(max);
 
       const totalSec = (fetchTime + buildTime + computeTime) / 1000;
       document.getElementById('stat-time').textContent = `${totalSec.toFixed(2)}s`;
+
+      // Update legend label to match active metric
+      document.getElementById('legend-label').textContent = metric.legend;
 
       // Render legend bar from the same color array
       const barEl = document.getElementById('legend-bar');
@@ -719,7 +988,7 @@
       for (let i = 0; i < numTicks; i++) {
         const idx = Math.round(i * (stops.length - 1) / (numTicks - 1));
         const span = document.createElement('span');
-        span.textContent = stops[idx].toFixed(0);
+        span.textContent = formatMetricValue(stops[idx]);
         tickEl.appendChild(span);
       }
     }
