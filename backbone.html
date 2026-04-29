@@ -115,11 +115,41 @@
       font-size: 0.78rem;
       color: var(--text-muted);
       line-height: 1.5;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       padding: 8px 10px;
       background: var(--surface);
       border-left: 3px solid var(--primary);
       border-radius: 0 6px 6px 0;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      font-size: 0.78rem;
+      color: var(--text);
+      cursor: pointer;
+      margin-bottom: 12px;
+      padding: 9px 11px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      transition: border-color 0.15s;
+      user-select: none;
+    }
+    .toggle-row:hover { border-color: var(--primary); }
+    .toggle-row input[type="checkbox"] {
+      margin-top: 2px;
+      cursor: pointer;
+      accent-color: var(--primary);
+      flex-shrink: 0;
+    }
+    .toggle-row .toggle-text { line-height: 1.45; }
+    .toggle-row .toggle-text small {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      margin-top: 2px;
     }
 
     #status {
@@ -274,6 +304,14 @@
       Streets carrying the most shortest paths between random points — the network's "main arteries".
     </div>
 
+    <label class="toggle-row">
+      <input type="checkbox" id="consolidate-toggle" checked />
+      <span class="toggle-text">
+        Consolidate intersections
+        <small>Merges nearby nodes within 15m — collapses dual carriageways into a single centerline. Recommended for analysis.</small>
+      </span>
+    </label>
+
     <div id="status">Waiting for selection...</div>
 
     <div id="result">
@@ -342,7 +380,7 @@
     map.addControl(drawControl);
 
     /* ===== Constants ===== */
-    const MAX_AREA_KM2 = 2;
+    const MAX_AREA_KM2 = 2.5;
     const MAX_NODES = 1500;
     const MIN_INTERVAL_MS = 3000;
     const MIN_COMPONENT_SIZE = 5;
@@ -641,7 +679,7 @@
             return;
           }
 
-          cache = { shapeKey: key, graph, fetchTime, buildTime };
+          cache = { shapeKey: key, graph, consolidated: null, fetchTime, buildTime };
         }
 
         await computeAndRender(statusEl, resultEl, fetchTime, buildTime);
@@ -652,7 +690,24 @@
     }
 
     async function computeAndRender(statusEl, resultEl, fetchTime, buildTime) {
-      const { graph } = cache;
+      const consolidate = document.getElementById('consolidate-toggle').checked;
+
+      // Apply consolidation lazily if requested
+      let graph = cache.graph;
+      let consolidationTime = 0;
+      let consolidationMeta = null;
+      if (consolidate) {
+        if (!cache.consolidated) {
+          statusEl.innerHTML = '<span class="spinner"></span>Consolidating intersections (15m)...';
+          await new Promise(r => setTimeout(r, 0));
+          const tc = performance.now();
+          cache.consolidated = consolidateIntersections(cache.graph, 15);
+          consolidationTime = performance.now() - tc;
+        }
+        graph = cache.consolidated;
+        consolidationMeta = graph.meta;
+      }
+
       const metricKey = activeMetric();
       const metric = METRICS[metricKey];
 
@@ -669,9 +724,13 @@
 
       edgesLayer.clearLayers();
       renderEdges(graph.edges, edgeValues);
-      showStats(graph, edgeValues, fetchTime, buildTime, computeTime, metric);
+      showStats(graph, edgeValues, fetchTime, buildTime, computeTime + consolidationTime, metric);
 
-      statusEl.textContent = `Done. ${graph.nodes.size} nodes, ${graph.edges.length} edges.`;
+      let statusMsg = `Done. ${graph.nodes.size} nodes, ${graph.edges.length} edges.`;
+      if (consolidationMeta) {
+        statusMsg += ` Merged ${consolidationMeta.mergedClusters} clusters, dropped ${consolidationMeta.droppedSelfLoops} self-loops.`;
+      }
+      statusEl.textContent = statusMsg;
       resultEl.style.display = 'block';
     }
 
@@ -684,7 +743,15 @@
       if (cache && cache.graph) {
         const statusEl = document.getElementById('status');
         const resultEl = document.getElementById('result');
-        // Use 0 for fetch/build times when reusing cache
+        await computeAndRender(statusEl, resultEl, 0, 0);
+      }
+    });
+
+    /* ===== Consolidation toggle ===== */
+    document.getElementById('consolidate-toggle').addEventListener('change', async () => {
+      if (cache && cache.graph) {
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
         await computeAndRender(statusEl, resultEl, 0, 0);
       }
     });
@@ -788,6 +855,120 @@
       }
 
       return { nodes: validNodes, edges: validEdges, coords: validCoords };
+    }
+
+    /* ===== Intersection consolidation (OSMnx-style) ===== */
+    /* Merges intersection-like nodes (degree >= 3) within `tolerance` meters into
+       a single representative node at the cluster centroid. Drops self-loops
+       (median crossings inside dual carriageways) and deduplicates parallel
+       edges, keeping the shortest. Edge geometry is preserved for accurate
+       visualization. */
+    function consolidateIntersections(graph, toleranceMeters = 15) {
+      const nodeIds = Array.from(graph.nodes);
+
+      // Compute graph degree
+      const degree = new Map();
+      for (const n of nodeIds) degree.set(n, 0);
+      for (const e of graph.edges) {
+        degree.set(e.startNode, degree.get(e.startNode) + 1);
+        degree.set(e.endNode,   degree.get(e.endNode)   + 1);
+      }
+
+      // Union-Find
+      const parent = new Map();
+      for (const n of nodeIds) parent.set(n, n);
+      function find(x) {
+        let root = x;
+        while (parent.get(root) !== root) root = parent.get(root);
+        while (parent.get(x) !== root) {
+          const next = parent.get(x);
+          parent.set(x, root);
+          x = next;
+        }
+        return root;
+      }
+      function union(a, b) {
+        const ra = find(a), rb = find(b);
+        if (ra !== rb) parent.set(ra, rb);
+      }
+
+      // Only intersection-like nodes (degree >= 3) are merge candidates.
+      // Pre-filter by lat range (~22m at this latitude) before running haversine.
+      const candidates = nodeIds.filter(n => degree.get(n) >= 3);
+      const latThreshold = toleranceMeters / 111000;
+      for (let i = 0; i < candidates.length; i++) {
+        const ai = candidates[i];
+        const ac = graph.coords.get(ai);
+        if (!ac) continue;
+        for (let j = i + 1; j < candidates.length; j++) {
+          const bj = candidates[j];
+          const bc = graph.coords.get(bj);
+          if (!bc) continue;
+          if (Math.abs(ac.lat - bc.lat) > latThreshold) continue;
+          if (haversine(ac, bc) <= toleranceMeters) {
+            union(ai, bj);
+          }
+        }
+      }
+
+      // Build cluster member lists and node->root map
+      const clusterMembers = new Map();
+      const nodeToRoot = new Map();
+      for (const n of nodeIds) {
+        const root = find(n);
+        nodeToRoot.set(n, root);
+        if (!clusterMembers.has(root)) clusterMembers.set(root, []);
+        clusterMembers.get(root).push(n);
+      }
+
+      // Centroids
+      const newCoords = new Map();
+      for (const [root, members] of clusterMembers) {
+        let lat = 0, lon = 0, count = 0;
+        for (const m of members) {
+          const c = graph.coords.get(m);
+          if (c) { lat += c.lat; lon += c.lon; count++; }
+        }
+        if (count > 0) newCoords.set(root, { lat: lat / count, lon: lon / count });
+      }
+
+      // Rewrite edges: drop self-loops, keep shortest of any parallel pair
+      const edgeMap = new Map();
+      for (const e of graph.edges) {
+        const a = nodeToRoot.get(e.startNode);
+        const b = nodeToRoot.get(e.endNode);
+        if (a === b) continue; // self-loop within cluster — drop
+        const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+        const existing = edgeMap.get(key);
+        if (!existing || e.length < existing.length) {
+          edgeMap.set(key, { ...e, startNode: a, endNode: b });
+        }
+      }
+
+      // Reassign sequential edge IDs
+      const newEdges = [];
+      let nextId = 0;
+      for (const e of edgeMap.values()) {
+        newEdges.push({ ...e, id: nextId++ });
+      }
+
+      const mergedClusters = Array.from(clusterMembers.values()).filter(m => m.length > 1).length;
+      const selfLoops = graph.edges.filter(e =>
+        nodeToRoot.get(e.startNode) === nodeToRoot.get(e.endNode)
+      ).length;
+
+      return {
+        nodes: new Set(clusterMembers.keys()),
+        edges: newEdges,
+        coords: newCoords,
+        meta: {
+          originalNodes: nodeIds.length,
+          originalEdges: graph.edges.length,
+          mergedClusters,
+          droppedEdges: graph.edges.length - newEdges.length,
+          droppedSelfLoops: selfLoops,
+        }
+      };
     }
 
     /* ===== Min-heap for Dijkstra ===== */
