@@ -352,20 +352,13 @@
       Streets carrying the most shortest paths between random points — the network's "main arteries".
     </div>
 
-    <div class="metric-selector">
-      <label for="consolidate-select">Consolidation tolerance</label>
-      <select id="consolidate-select">
-        <option value="0">Off (raw OSM)</option>
-        <option value="10">10 m — gentle</option>
-        <option value="15">15 m</option>
-        <option value="20" selected>20 m (default)</option>
-        <option value="25">25 m — aggressive</option>
-        <option value="30">30 m — very aggressive</option>
-      </select>
-    </div>
-    <div class="metric-desc" style="margin-bottom:14px">
-      Merges nearby intersection nodes — collapses dual carriageways and one-way pairs into a single centerline. Higher tolerance catches wider gaps but may over-merge in dense areas.
-    </div>
+    <label class="toggle-row">
+      <input type="checkbox" id="consolidate-toggle" checked />
+      <span class="toggle-text">
+        Consolidate intersections
+        <small>Merges nearby nodes within 15m — collapses dual carriageways into a single centerline. Recommended for analysis.</small>
+      </span>
+    </label>
 
     <div id="status">Waiting for selection...</div>
 
@@ -813,20 +806,18 @@
     }
 
     async function computeAndRender(statusEl, resultEl, fetchTime, buildTime) {
-      const tolerance = parseInt(document.getElementById('consolidate-select').value, 10);
+      const consolidate = document.getElementById('consolidate-toggle').checked;
 
-      // Apply consolidation lazily if requested. Cache by tolerance value.
+      // Apply consolidation lazily if requested
       let graph = cache.graph;
       let consolidationTime = 0;
       let consolidationMeta = null;
-      if (tolerance > 0) {
-        // Invalidate consolidated cache if tolerance changed
-        if (!cache.consolidated || cache.consolidatedTolerance !== tolerance) {
-          statusEl.innerHTML = `<span class="spinner"></span>Consolidating intersections (${tolerance}m)...`;
+      if (consolidate) {
+        if (!cache.consolidated) {
+          statusEl.innerHTML = '<span class="spinner"></span>Consolidating intersections (15m)...';
           await new Promise(r => setTimeout(r, 0));
           const tc = performance.now();
-          cache.consolidated = consolidateIntersections(cache.graph, tolerance);
-          cache.consolidatedTolerance = tolerance;
+          cache.consolidated = consolidateIntersections(cache.graph, 15);
           consolidationTime = performance.now() - tc;
         }
         graph = cache.consolidated;
@@ -874,8 +865,8 @@
       }
     });
 
-    /* ===== Consolidation tolerance change ===== */
-    document.getElementById('consolidate-select').addEventListener('change', async () => {
+    /* ===== Consolidation toggle ===== */
+    document.getElementById('consolidate-toggle').addEventListener('change', async () => {
       if (cache && cache.graph) {
         const statusEl = document.getElementById('status');
         const resultEl = document.getElementById('result');
