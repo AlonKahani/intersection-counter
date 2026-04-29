@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Intersection Counter</title>
+  <title>OSM Network Analyzer</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
@@ -28,9 +28,7 @@
     }
 
     #map { height: 100vh; width: 100vw; }
-
-    /* Slight softening of map tiles so the UI pops */
-    .leaflet-tile-pane { filter: saturate(0.9) contrast(0.96); }
+    .leaflet-tile-pane { filter: saturate(0.85) contrast(0.95); }
 
     #panel {
       position: absolute;
@@ -46,19 +44,19 @@
         0 10px 32px rgba(15, 23, 42, 0.12),
         0 2px 6px rgba(15, 23, 42, 0.06),
         0 0 0 1px rgba(255, 255, 255, 0.6) inset;
-      width: 288px;
+      width: 320px;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
     }
 
     #panel h2 {
       font-size: 1.05rem;
       font-weight: 700;
-      color: var(--text);
       display: flex;
       align-items: center;
       gap: 9px;
       letter-spacing: -0.01em;
     }
-
     #panel h2::before {
       content: "";
       width: 10px;
@@ -67,13 +65,91 @@
       background: linear-gradient(135deg, var(--primary), var(--accent));
       box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
     }
-
     #panel p.hint {
       font-size: 0.82rem;
       color: var(--text-muted);
       line-height: 1.5;
       margin-top: 6px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
+    }
+
+    .metric-selector {
+      margin-bottom: 8px;
+    }
+    .metric-selector label {
+      display: block;
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    .metric-selector select {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 30px;
+    }
+    .metric-selector select:hover,
+    .metric-selector select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+
+    .metric-desc {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border-left: 3px solid var(--primary);
+      border-radius: 0 6px 6px 0;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      font-size: 0.78rem;
+      color: var(--text);
+      cursor: pointer;
+      margin-bottom: 12px;
+      padding: 9px 11px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      transition: border-color 0.15s;
+      user-select: none;
+    }
+    .toggle-row:hover { border-color: var(--primary); }
+    .toggle-row input[type="checkbox"] {
+      margin-top: 2px;
+      cursor: pointer;
+      accent-color: var(--primary);
+      flex-shrink: 0;
+    }
+    .toggle-row .toggle-text { line-height: 1.45; }
+    .toggle-row .toggle-text small {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      margin-top: 2px;
     }
 
     #status {
@@ -89,46 +165,110 @@
       margin-top: 12px;
       animation: fadeIn 0.3s ease-out;
     }
-
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    .metric {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      padding: 14px 16px;
-      border-radius: 12px;
+    .section-title {
+      font-size: 0.62rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-weight: 700;
+      margin-top: 4px;
+      margin-bottom: 6px;
+    }
+    .section-title:first-child { margin-top: 0; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
       margin-bottom: 10px;
     }
+    .stat-cell {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+    .stat-cell.highlight {
+      background: linear-gradient(135deg, rgba(37,99,235,0.06), rgba(13,148,136,0.06));
+      border-color: rgba(37,99,235,0.25);
+    }
+    .stat-cell .label {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+    }
+    .stat-cell .value {
+      font-size: 1.35rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      margin-top: 2px;
+      letter-spacing: -0.01em;
+    }
+    .stat-cell:not(.highlight) .value {
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+    .stat-cell .sublabel {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
 
-    .metric:last-child { margin-bottom: 0; }
+    .timing-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.78rem;
+      margin-bottom: 14px;
+    }
+    .timing-row .label {
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+      font-size: 0.65rem;
+    }
+    .timing-row .value {
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
 
-    .metric .label {
+    .legend .label {
       font-size: 0.7rem;
       color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.08em;
       font-weight: 600;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
     }
-
-    .metric .value {
-      font-size: 2.1rem;
-      font-weight: 800;
-      line-height: 1.1;
-      letter-spacing: -0.02em;
-      font-variant-numeric: tabular-nums;
+    .legend-bar {
+      display: flex;
+      height: 12px;
+      border-radius: 6px;
+      overflow: hidden;
     }
-
-    .metric.primary .value { color: var(--primary-dark); }
-    .metric.accent  .value { color: var(--accent); }
-
-    .metric .sub {
-      font-size: 0.78rem;
+    .legend-bar > span {
+      flex: 1;
+      height: 100%;
+    }
+    .legend-ticks {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
       color: var(--text-muted);
       margin-top: 4px;
+      font-variant-numeric: tabular-nums;
     }
 
     .spinner {
@@ -142,12 +282,10 @@
       margin-right: 7px;
       vertical-align: middle;
     }
-
     @keyframes spin { to { transform: rotate(360deg); } }
 
     .error { color: var(--error); font-weight: 500; }
 
-    /* Credit bar */
     .credits {
       position: absolute;
       bottom: 8px;
@@ -161,119 +299,142 @@
       border-radius: 999px;
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
     }
-
     .credits a {
       color: var(--primary);
       text-decoration: none;
       font-weight: 500;
     }
-
     .credits a:hover { text-decoration: underline; }
 
-    /* Polish the Leaflet.draw toolbar a bit */
-    .leaflet-draw-toolbar a {
-      border-radius: 6px !important;
-    }
+    .leaflet-draw-toolbar a { border-radius: 6px !important; }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
-  <div class="credits">
-    OSM data © <a href="https://www.openstreetmap.org/copyright">contributors</a>
-    · <a href="backbone.html">street backbone</a>
+  <div id="panel">
+    <h2>OSM Network Analyzer</h2>
+    <p class="hint">Draw a rectangle or polygon (≤2.5 km²) to count intersections, measure density, and analyze network metrics from OpenStreetMap.</p>
+
+    <div class="metric-selector">
+      <label for="metric-select">Analysis</label>
+      <select id="metric-select">
+        <option value="betweenness">Edge betweenness</option>
+        <option value="closeness">Closeness</option>
+        <option value="degree">Degree</option>
+        <option value="straightness">Straightness</option>
+      </select>
+    </div>
+    <div class="metric-desc" id="metric-desc">
+      Streets carrying the most shortest paths between random points — the network's "main arteries".
+    </div>
+
+    <label class="toggle-row">
+      <input type="checkbox" id="consolidate-toggle" checked />
+      <span class="toggle-text">
+        Consolidate intersections
+        <small>Merges nearby nodes within 15m — collapses dual carriageways into a single centerline. Recommended for analysis.</small>
+      </span>
+    </label>
+
+    <div id="status">Waiting for selection...</div>
+
+    <div id="result">
+      <div class="section-title">Area summary</div>
+      <div class="stats-grid">
+        <div class="stat-cell highlight">
+          <div class="label">Intersections</div>
+          <div class="value" id="stat-intersections">—</div>
+          <div class="sublabel" id="stat-intersections-sub"></div>
+        </div>
+        <div class="stat-cell highlight">
+          <div class="label">Density</div>
+          <div class="value" id="stat-density">—</div>
+          <div class="sublabel" id="stat-density-sub"></div>
+        </div>
+      </div>
+
+      <div class="section-title">Graph</div>
+      <div class="stats-grid">
+        <div class="stat-cell">
+          <div class="label">Nodes</div>
+          <div class="value" id="stat-nodes">—</div>
+        </div>
+        <div class="stat-cell">
+          <div class="label">Edges</div>
+          <div class="value" id="stat-edges">—</div>
+        </div>
+        <div class="stat-cell">
+          <div class="label">Mean</div>
+          <div class="value" id="stat-mean">—</div>
+        </div>
+        <div class="stat-cell">
+          <div class="label">Max</div>
+          <div class="value" id="stat-max">—</div>
+        </div>
+      </div>
+
+      <div class="timing-row">
+        <span class="label">Compute time</span>
+        <span class="value" id="stat-time">—</span>
+      </div>
+
+      <div class="legend">
+        <div class="label" id="legend-label">Edge betweenness (quantile)</div>
+        <div class="legend-bar" id="legend-bar"></div>
+        <div class="legend-ticks" id="legend-ticks">
+          <span>—</span><span>—</span><span>—</span><span>—</span><span>—</span>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <div id="panel">
-    <h2>Intersection Counter</h2>
-    <p class="hint">Use the rectangle or polygon tool (top-left of map) to draw an area. Road intersections inside will be counted.</p>
-    <div id="status">Waiting for selection...</div>
-    <div id="result">
-      <div class="label">Intersections found</div>
-      <div class="count" id="count">—</div>
-      <div class="sub" id="sub"></div>
-      <div class="label" style="margin-top:14px">Density</div>
-      <div class="count" id="density" style="font-size:1.6rem;color:#0f766e">—</div>
-      <div class="sub" id="area"></div>
-    </div>
+  <div class="credits">
+    OSM data © <a href="https://www.openstreetmap.org/copyright">contributors</a>
+    · <a href="https://github.com/AlonKahani/intersection-counter">source</a>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chroma-js@2.4.2/chroma.min.js"></script>
   <script>
-    // Default view: Tel Aviv
+    /* ===== Map ===== */
     const map = L.map('map').setView([32.08, 34.78], 14);
-
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    // Layer to hold drawn shapes
     const drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
+    const edgesLayer = L.layerGroup().addTo(map);
 
-    // Draw control — rectangle + polygon
-    const shapeOptions = { color: '#1a56db', weight: 2 };
     const drawControl = new L.Control.Draw({
       draw: {
-        rectangle: { shapeOptions },
-        polygon:   { shapeOptions, allowIntersection: false, showArea: false },
-        polyline: false,
-        circle: false,
-        circlemarker: false,
-        marker: false
+        rectangle: { shapeOptions: { color: '#1a56db', weight: 2 } },
+        polygon:   { shapeOptions: { color: '#1a56db', weight: 2 }, allowIntersection: false, showArea: false },
+        polyline: false, circle: false, circlemarker: false, marker: false
       },
       edit: { featureGroup: drawnItems }
     });
     map.addControl(drawControl);
 
-    // Rate limit: minimum 3 seconds between queries to respect Overpass fair use
-    let lastQueryTime = 0;
+    /* ===== Constants ===== */
+    const MAX_AREA_KM2 = 2.5;
+    const MAX_NODES = 1500;
     const MIN_INTERVAL_MS = 3000;
-    const MAX_AREA_KM2 = 25;
+    const MIN_COMPONENT_SIZE = 5;
+    let lastQueryTime = 0;
 
-    // Extract outer ring of latlngs from a Leaflet rectangle or polygon
+    /* ===== Geometry helpers ===== */
     function latLngsOf(layer) {
       const raw = layer.getLatLngs();
       return Array.isArray(raw[0]) ? raw[0] : raw;
     }
 
-    function runCount(latlngs) {
-      const statusEl = document.getElementById('status');
-      const area = polygonAreaKm2(latlngs);
-
-      if (area > MAX_AREA_KM2) {
-        statusEl.innerHTML = `<span class="error">&#9888; Area too large (${area.toFixed(1)} km²). Max ${MAX_AREA_KM2} km² — try a smaller area.</span>`;
-        document.getElementById('result').style.display = 'none';
-        return;
-      }
-
-      const now = Date.now();
-      const wait = Math.max(0, lastQueryTime + MIN_INTERVAL_MS - now);
-      lastQueryTime = now + wait;
-      if (wait > 0) {
-        statusEl.textContent = `Rate-limiting... waiting ${(wait / 1000).toFixed(1)}s`;
-        setTimeout(() => countIntersections(latlngs, area), wait);
-      } else {
-        countIntersections(latlngs, area);
-      }
-    }
-
-    map.on(L.Draw.Event.CREATED, (e) => {
-      drawnItems.clearLayers();
-      drawnItems.addLayer(e.layer);
-      runCount(latLngsOf(e.layer));
-    });
-
-    map.on(L.Draw.Event.EDITED, (e) => {
-      e.layers.eachLayer((layer) => runCount(latLngsOf(layer)));
-    });
-
-    // Geodesic polygon area in km² using spherical excess (Green's theorem on a sphere)
     function polygonAreaKm2(latlngs) {
       if (!latlngs || latlngs.length < 3) return 0;
-      const R = 6371; // Earth radius in km
+      const R = 6371;
       const toRad = d => d * Math.PI / 180;
       let area = 0;
       for (let i = 0; i < latlngs.length; i++) {
@@ -285,6 +446,52 @@
       return Math.abs(area * R * R / 2);
     }
 
+    function haversine(p1, p2) {
+      const R = 6371000;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(p2.lat - p1.lat);
+      const dLon = toRad(p2.lon - p1.lon);
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(p1.lat)) * Math.cos(toRad(p2.lat)) *
+                Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    /* ===== Draw events ===== */
+    map.on(L.Draw.Event.CREATED, (e) => {
+      drawnItems.clearLayers();
+      drawnItems.addLayer(e.layer);
+      runAnalysis(latLngsOf(e.layer));
+    });
+
+    map.on(L.Draw.Event.EDITED, (e) => {
+      e.layers.eachLayer((layer) => runAnalysis(latLngsOf(layer)));
+    });
+
+    function runAnalysis(latlngs) {
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      resultEl.style.display = 'none';
+      edgesLayer.clearLayers();
+
+      const area = polygonAreaKm2(latlngs);
+      if (area > MAX_AREA_KM2) {
+        statusEl.innerHTML = `<span class="error">&#9888; Area too large (${area.toFixed(2)} km²). Max ${MAX_AREA_KM2} km² — try a smaller area.</span>`;
+        return;
+      }
+
+      const now = Date.now();
+      const wait = Math.max(0, lastQueryTime + MIN_INTERVAL_MS - now);
+      lastQueryTime = now + wait;
+      if (wait > 0) {
+        statusEl.textContent = `Rate-limiting... waiting ${(wait / 1000).toFixed(1)}s`;
+        setTimeout(() => analyze(latlngs), wait);
+      } else {
+        analyze(latlngs);
+      }
+    }
+
+    /* ===== Overpass fetch ===== */
     const OVERPASS_ENDPOINTS = [
       'https://z.overpass-api.de/api/interpreter',
       'https://overpass-api.de/api/interpreter',
@@ -303,100 +510,728 @@
             reject(new Error(`HTTP ${xhr.status}`));
           }
         };
-        xhr.onerror   = () => reject(new Error('Network error (XHR)'));
-        xhr.ontimeout = () => reject(new Error('Timeout (XHR)'));
+        xhr.onerror   = () => reject(new Error('Network error'));
+        xhr.ontimeout = () => reject(new Error('Timeout'));
         xhr.send();
       });
     }
 
-    async function fetchOverpass(query, logEl) {
-      const log = (msg) => { logEl.textContent = msg; console.log(msg); };
+    async function fetchOverpass(query, statusEl) {
       const errors = [];
-
       for (const endpoint of OVERPASS_ENDPOINTS) {
         const url = endpoint + '?data=' + encodeURIComponent(query);
-        log(`Trying ${endpoint}...`);
-        // Try fetch first
+        statusEl.innerHTML = `<span class="spinner"></span>Fetching from ${endpoint.replace('https://', '')}...`;
         try {
           const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return await response.json();
         } catch (err) {
           errors.push(`fetch ${endpoint}: ${err.message}`);
-          console.warn(err.message);
         }
-        // Try XHR fallback
         try {
           return await xhrGet(url);
         } catch (err) {
           errors.push(`xhr ${endpoint}: ${err.message}`);
-          console.warn(err.message);
+        }
+      }
+      throw new Error('Overpass unavailable: ' + errors.join('; '));
+    }
+
+    /* ===== Metric registry ===== */
+    const METRICS = {
+      betweenness: {
+        label: 'Edge betweenness',
+        legend: 'Edge betweenness (quantile)',
+        description: 'Streets carrying the most shortest paths between random points — the network\'s "main arteries".',
+        compute: (graph) => brandesEdgeBC(graph),
+        kind: 'edge'
+      },
+      closeness: {
+        label: 'Closeness',
+        legend: 'Closeness × 1000 (quantile)',
+        description: 'Most accessible intersections — those with the lowest average travel distance to all others. Inverse of mean shortest-path distance.',
+        compute: (graph) => closenessCentrality(graph),
+        kind: 'node'
+      },
+      degree: {
+        label: 'Degree',
+        legend: 'Degree (number of streets)',
+        description: 'Local connectivity — how many streets meet at each intersection. Highest values mark the most-connected junctions.',
+        compute: (graph) => degreeCentrality(graph),
+        kind: 'node'
+      },
+      straightness: {
+        label: 'Straightness',
+        legend: 'Straightness (0–1, quantile)',
+        description: 'How direct routes are. High = the shortest network path closely follows the crow-flight line. Low = winding, indirect connectivity.',
+        compute: (graph) => straightnessCentrality(graph),
+        kind: 'node'
+      }
+    };
+
+    /* ===== State / cache ===== */
+    let cache = null; // { shapeKey, graph, fetchTime, buildTime }
+
+    function shapeKey(latlngs) {
+      return latlngs.map(p => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`).join('|');
+    }
+
+    function activeMetric() {
+      return document.getElementById('metric-select').value;
+    }
+
+    /* ===== Metric implementations ===== */
+
+    function buildAdjacency(graph) {
+      const adj = new Map();
+      for (const node of graph.nodes) adj.set(node, []);
+      for (const e of graph.edges) {
+        adj.get(e.startNode).push({ target: e.endNode, weight: e.length });
+        adj.get(e.endNode).push({ target: e.startNode, weight: e.length });
+      }
+      return adj;
+    }
+
+    function dijkstra(source, adj, nodeArr) {
+      const dist = new Map();
+      for (const v of nodeArr) dist.set(v, Infinity);
+      dist.set(source, 0);
+      const heap = new MinHeap();
+      heap.push([0, source]);
+      while (heap.size > 0) {
+        const [d, v] = heap.pop();
+        if (d > dist.get(v)) continue;
+        for (const { target, weight } of adj.get(v)) {
+          const nd = d + weight;
+          if (nd < dist.get(target)) {
+            dist.set(target, nd);
+            heap.push([nd, target]);
+          }
+        }
+      }
+      return dist;
+    }
+
+    function degreeCentrality(graph) {
+      const result = new Map();
+      for (const node of graph.nodes) result.set(node, 0);
+      for (const e of graph.edges) {
+        result.set(e.startNode, result.get(e.startNode) + 1);
+        result.set(e.endNode, result.get(e.endNode) + 1);
+      }
+      return result;
+    }
+
+    function closenessCentrality(graph) {
+      const adj = buildAdjacency(graph);
+      const nodeArr = Array.from(graph.nodes);
+      const result = new Map();
+      for (const s of nodeArr) {
+        const dist = dijkstra(s, adj, nodeArr);
+        let sumDist = 0, reachable = 0;
+        for (const v of nodeArr) {
+          if (v !== s && dist.get(v) < Infinity) {
+            sumDist += dist.get(v);
+            reachable++;
+          }
+        }
+        // Wasserman–Faust closeness, scaled ×1000 for readable values (m → ~1/km)
+        if (sumDist > 0) {
+          const wf = (reachable / (nodeArr.length - 1)) * (reachable / sumDist);
+          result.set(s, wf * 1000);
+        } else {
+          result.set(s, 0);
+        }
+      }
+      return result;
+    }
+
+    function straightnessCentrality(graph) {
+      const adj = buildAdjacency(graph);
+      const nodeArr = Array.from(graph.nodes);
+      const result = new Map();
+      for (const s of nodeArr) {
+        const dist = dijkstra(s, adj, nodeArr);
+        const sCoord = graph.coords.get(s);
+        let sumRatio = 0, reachable = 0;
+        for (const v of nodeArr) {
+          if (v === s) continue;
+          const d = dist.get(v);
+          if (d < Infinity && d > 0) {
+            const vCoord = graph.coords.get(v);
+            if (sCoord && vCoord) {
+              const euclid = haversine(sCoord, vCoord);
+              sumRatio += euclid / d;
+              reachable++;
+            }
+          }
+        }
+        result.set(s, reachable > 0 ? sumRatio / reachable : 0);
+      }
+      return result;
+    }
+
+    function nodeMetricToEdge(nodeValues, edges) {
+      const result = new Map();
+      for (const e of edges) {
+        const a = nodeValues.get(e.startNode) || 0;
+        const b = nodeValues.get(e.endNode) || 0;
+        result.set(e.id, (a + b) / 2);
+      }
+      return result;
+    }
+
+    /* ===== Pipeline ===== */
+    async function analyze(latlngs) {
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      resultEl.style.display = 'none';
+
+      try {
+        const key = shapeKey(latlngs);
+        let fetchTime = 0, buildTime = 0;
+
+        // Reuse cache if same shape
+        if (!cache || cache.shapeKey !== key) {
+          const polyStr = latlngs
+            .map(p => `${p.lat.toFixed(6)} ${p.lng.toFixed(6)}`)
+            .join(' ');
+          const query = `[out:json][timeout:30];way[highway][highway!~"footway|cycleway|path|steps|service|track|proposed|construction"](poly:"${polyStr}");out geom;`;
+
+          const t0 = performance.now();
+          const data = await fetchOverpass(query, statusEl);
+          fetchTime = performance.now() - t0;
+
+          statusEl.innerHTML = '<span class="spinner"></span>Building graph...';
+          await new Promise(r => setTimeout(r, 0));
+          const t1 = performance.now();
+          const graph = buildPrimalGraph(data.elements);
+          buildTime = performance.now() - t1;
+
+          if (graph.nodes.size === 0) {
+            statusEl.innerHTML = '<span class="error">No road network found in the area.</span>';
+            cache = null;
+            return;
+          }
+          if (graph.nodes.size > MAX_NODES) {
+            statusEl.innerHTML = `<span class="error">&#9888; Too many intersections (${graph.nodes.size} > ${MAX_NODES}). Try a smaller area.</span>`;
+            cache = null;
+            return;
+          }
+
+          const area = polygonAreaKm2(latlngs);
+          cache = { shapeKey: key, graph, consolidated: null, fetchTime, buildTime, area };
+        }
+
+        await computeAndRender(statusEl, resultEl, fetchTime, buildTime);
+      } catch (err) {
+        statusEl.innerHTML = `<span class="error">&#9888; ${err.message}</span>`;
+        console.error(err);
+      }
+    }
+
+    async function computeAndRender(statusEl, resultEl, fetchTime, buildTime) {
+      const consolidate = document.getElementById('consolidate-toggle').checked;
+
+      // Apply consolidation lazily if requested
+      let graph = cache.graph;
+      let consolidationTime = 0;
+      let consolidationMeta = null;
+      if (consolidate) {
+        if (!cache.consolidated) {
+          statusEl.innerHTML = '<span class="spinner"></span>Consolidating intersections (15m)...';
+          await new Promise(r => setTimeout(r, 0));
+          const tc = performance.now();
+          cache.consolidated = consolidateIntersections(cache.graph, 15);
+          consolidationTime = performance.now() - tc;
+        }
+        graph = cache.consolidated;
+        consolidationMeta = graph.meta;
+      }
+
+      const metricKey = activeMetric();
+      const metric = METRICS[metricKey];
+
+      statusEl.innerHTML = `<span class="spinner"></span>Computing ${metric.label.toLowerCase()} for ${graph.nodes.size} nodes...`;
+      await new Promise(r => setTimeout(r, 50));
+
+      const t2 = performance.now();
+      const raw = metric.compute(graph);
+      const computeTime = performance.now() - t2;
+
+      const edgeValues = metric.kind === 'edge'
+        ? raw
+        : nodeMetricToEdge(raw, graph.edges);
+
+      edgesLayer.clearLayers();
+      renderEdges(graph.edges, edgeValues);
+      showStats(graph, edgeValues, fetchTime, buildTime, computeTime + consolidationTime, metric);
+
+      let statusMsg = `Done. ${graph.nodes.size} nodes, ${graph.edges.length} edges.`;
+      if (consolidationMeta) {
+        statusMsg += ` Merged ${consolidationMeta.mergedClusters} clusters, dropped ${consolidationMeta.droppedSelfLoops} self-loops.`;
+      }
+      statusEl.textContent = statusMsg;
+      resultEl.style.display = 'block';
+    }
+
+    /* ===== Metric selector wiring ===== */
+    document.getElementById('metric-select').addEventListener('change', async () => {
+      const metricKey = activeMetric();
+      document.getElementById('metric-desc').textContent = METRICS[metricKey].description;
+
+      // Recompute on cached graph if available
+      if (cache && cache.graph) {
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+        await computeAndRender(statusEl, resultEl, 0, 0);
+      }
+    });
+
+    /* ===== Consolidation toggle ===== */
+    document.getElementById('consolidate-toggle').addEventListener('change', async () => {
+      if (cache && cache.graph) {
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+        await computeAndRender(statusEl, resultEl, 0, 0);
+      }
+    });
+
+    /* ===== Primal graph: intersections + endpoints as nodes, segments as edges ===== */
+    function buildPrimalGraph(elements) {
+      const ways = elements.filter(e =>
+        e.type === 'way' && e.geometry && e.nodes && e.nodes.length >= 2
+      );
+
+      // Count node appearances; mark endpoints; index node coordinates
+      const nodeWayCount = new Map();
+      const endpoints = new Set();
+      const nodeCoords = new Map(); // osmNodeId -> {lat, lon}
+      for (const w of ways) {
+        for (let i = 0; i < w.nodes.length; i++) {
+          const id = w.nodes[i];
+          nodeWayCount.set(id, (nodeWayCount.get(id) || 0) + 1);
+          if (!nodeCoords.has(id)) nodeCoords.set(id, w.geometry[i]);
+        }
+        endpoints.add(w.nodes[0]);
+        endpoints.add(w.nodes[w.nodes.length - 1]);
+      }
+
+      const graphNodes = new Set();
+      for (const [id, count] of nodeWayCount) {
+        if (count >= 2 || endpoints.has(id)) graphNodes.add(id);
+      }
+
+      // Walk each way; emit one edge per segment between consecutive graph nodes
+      const edges = [];
+      let edgeId = 0;
+      for (const w of ways) {
+        let segStart = -1;
+        for (let i = 0; i < w.nodes.length; i++) {
+          if (graphNodes.has(w.nodes[i])) {
+            if (segStart >= 0 && i > segStart) {
+              const startNode = w.nodes[segStart];
+              const endNode = w.nodes[i];
+              if (startNode !== endNode) {
+                const geom = w.geometry.slice(segStart, i + 1);
+                let length = 0;
+                for (let j = 1; j < geom.length; j++) {
+                  length += haversine(geom[j - 1], geom[j]);
+                }
+                length = Math.round(length * 100) / 100; // cm precision for FP stability
+                edges.push({
+                  id: edgeId++,
+                  startNode, endNode, length, geometry: geom,
+                  name: w.tags?.name,
+                  highway: w.tags?.highway
+                });
+              }
+            }
+            segStart = i;
+          }
         }
       }
 
-      // Last resort: CORS proxy
-      log('Trying CORS proxy...');
-      try {
-        const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(
-          OVERPASS_ENDPOINTS[0] + '?data=' + encodeURIComponent(query)
-        );
-        const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(30000) });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await response.json();
-      } catch (err) {
-        errors.push(`corsproxy: ${err.message}`);
+      // Drop tiny disconnected components
+      const adj = new Map();
+      for (const e of edges) {
+        if (!adj.has(e.startNode)) adj.set(e.startNode, []);
+        if (!adj.has(e.endNode)) adj.set(e.endNode, []);
+        adj.get(e.startNode).push(e.endNode);
+        adj.get(e.endNode).push(e.startNode);
       }
 
-      throw new Error('All attempts failed:\n' + errors.join('\n'));
+      const visited = new Set();
+      const components = [];
+      for (const node of adj.keys()) {
+        if (visited.has(node)) continue;
+        const comp = new Set();
+        const stack = [node];
+        while (stack.length) {
+          const v = stack.pop();
+          if (visited.has(v)) continue;
+          visited.add(v);
+          comp.add(v);
+          for (const w of adj.get(v) || []) {
+            if (!visited.has(w)) stack.push(w);
+          }
+        }
+        components.push(comp);
+      }
+
+      const validNodes = new Set();
+      for (const comp of components) {
+        if (comp.size >= MIN_COMPONENT_SIZE) {
+          for (const n of comp) validNodes.add(n);
+        }
+      }
+      const validEdges = edges.filter(e =>
+        validNodes.has(e.startNode) && validNodes.has(e.endNode)
+      );
+
+      // Trim coords to only nodes in the valid graph
+      const validCoords = new Map();
+      for (const n of validNodes) {
+        if (nodeCoords.has(n)) validCoords.set(n, nodeCoords.get(n));
+      }
+
+      return { nodes: validNodes, edges: validEdges, coords: validCoords };
     }
 
-    async function countIntersections(latlngs, areaKm2) {
-      const statusEl = document.getElementById('status');
-      const resultEl = document.getElementById('result');
-      const countEl  = document.getElementById('count');
-      const subEl    = document.getElementById('sub');
+    /* ===== Intersection consolidation (OSMnx-style) ===== */
+    /* Merges intersection-like nodes (degree >= 3) within `tolerance` meters into
+       a single representative node at the cluster centroid. Drops self-loops
+       (median crossings inside dual carriageways) and deduplicates parallel
+       edges, keeping the shortest. Edge geometry is preserved for accurate
+       visualization. */
+    function consolidateIntersections(graph, toleranceMeters = 15) {
+      const nodeIds = Array.from(graph.nodes);
 
-      resultEl.style.display = 'none';
-      statusEl.innerHTML = '<span class="spinner"></span>Connecting...';
+      // Compute graph degree
+      const degree = new Map();
+      for (const n of nodeIds) degree.set(n, 0);
+      for (const e of graph.edges) {
+        degree.set(e.startNode, degree.get(e.startNode) + 1);
+        degree.set(e.endNode,   degree.get(e.endNode)   + 1);
+      }
 
-      // Build poly filter for Overpass: "lat1 lng1 lat2 lng2 ..."
-      const polyStr = latlngs
-        .map(p => `${p.lat.toFixed(6)} ${p.lng.toFixed(6)}`)
-        .join(' ');
+      // Union-Find
+      const parent = new Map();
+      for (const n of nodeIds) parent.set(n, n);
+      function find(x) {
+        let root = x;
+        while (parent.get(root) !== root) root = parent.get(root);
+        while (parent.get(x) !== root) {
+          const next = parent.get(x);
+          parent.set(x, root);
+          x = next;
+        }
+        return root;
+      }
+      function union(a, b) {
+        const ra = find(a), rb = find(b);
+        if (ra !== rb) parent.set(ra, rb);
+      }
 
-      // Query road ways inside the polygon (excludes footways, steps, etc.)
-      const query = `[out:json][timeout:30];way[highway][highway!~"footway|cycleway|path|steps|service|track|proposed|construction"](poly:"${polyStr}");out body;`;
+      // Only intersection-like nodes (degree >= 3) are merge candidates.
+      // Pre-filter by lat range (~22m at this latitude) before running haversine.
+      const candidates = nodeIds.filter(n => degree.get(n) >= 3);
+      const latThreshold = toleranceMeters / 111000;
+      for (let i = 0; i < candidates.length; i++) {
+        const ai = candidates[i];
+        const ac = graph.coords.get(ai);
+        if (!ac) continue;
+        for (let j = i + 1; j < candidates.length; j++) {
+          const bj = candidates[j];
+          const bc = graph.coords.get(bj);
+          if (!bc) continue;
+          if (Math.abs(ac.lat - bc.lat) > latThreshold) continue;
+          if (haversine(ac, bc) <= toleranceMeters) {
+            union(ai, bj);
+          }
+        }
+      }
 
-      try {
-        const data = await fetchOverpass(query, statusEl);
+      // Build cluster member lists and node->root map
+      const clusterMembers = new Map();
+      const nodeToRoot = new Map();
+      for (const n of nodeIds) {
+        const root = find(n);
+        nodeToRoot.set(n, root);
+        if (!clusterMembers.has(root)) clusterMembers.set(root, []);
+        clusterMembers.get(root).push(n);
+      }
 
-        // Count how many ways each node appears in
-        const nodeCount = {};
-        let wayCount = 0;
-        for (const el of data.elements) {
-          if (el.type === 'way' && el.nodes) {
-            wayCount++;
-            for (const nodeId of el.nodes) {
-              nodeCount[nodeId] = (nodeCount[nodeId] || 0) + 1;
+      // Centroids
+      const newCoords = new Map();
+      for (const [root, members] of clusterMembers) {
+        let lat = 0, lon = 0, count = 0;
+        for (const m of members) {
+          const c = graph.coords.get(m);
+          if (c) { lat += c.lat; lon += c.lon; count++; }
+        }
+        if (count > 0) newCoords.set(root, { lat: lat / count, lon: lon / count });
+      }
+
+      // Rewrite edges: drop self-loops, keep shortest of any parallel pair
+      const edgeMap = new Map();
+      for (const e of graph.edges) {
+        const a = nodeToRoot.get(e.startNode);
+        const b = nodeToRoot.get(e.endNode);
+        if (a === b) continue; // self-loop within cluster — drop
+        const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+        const existing = edgeMap.get(key);
+        if (!existing || e.length < existing.length) {
+          edgeMap.set(key, { ...e, startNode: a, endNode: b });
+        }
+      }
+
+      // Reassign sequential edge IDs
+      const newEdges = [];
+      let nextId = 0;
+      for (const e of edgeMap.values()) {
+        newEdges.push({ ...e, id: nextId++ });
+      }
+
+      const mergedClusters = Array.from(clusterMembers.values()).filter(m => m.length > 1).length;
+      const selfLoops = graph.edges.filter(e =>
+        nodeToRoot.get(e.startNode) === nodeToRoot.get(e.endNode)
+      ).length;
+
+      return {
+        nodes: new Set(clusterMembers.keys()),
+        edges: newEdges,
+        coords: newCoords,
+        meta: {
+          originalNodes: nodeIds.length,
+          originalEdges: graph.edges.length,
+          mergedClusters,
+          droppedEdges: graph.edges.length - newEdges.length,
+          droppedSelfLoops: selfLoops,
+        }
+      };
+    }
+
+    /* ===== Min-heap for Dijkstra ===== */
+    class MinHeap {
+      constructor() { this.h = []; }
+      get size() { return this.h.length; }
+      push(item) {
+        this.h.push(item);
+        let i = this.h.length - 1;
+        while (i > 0) {
+          const p = (i - 1) >> 1;
+          if (this.h[p][0] <= this.h[i][0]) break;
+          [this.h[p], this.h[i]] = [this.h[i], this.h[p]];
+          i = p;
+        }
+      }
+      pop() {
+        if (!this.h.length) return null;
+        const top = this.h[0];
+        const last = this.h.pop();
+        if (this.h.length) {
+          this.h[0] = last;
+          const n = this.h.length;
+          let i = 0;
+          while (true) {
+            const l = 2 * i + 1, r = l + 1;
+            let s = i;
+            if (l < n && this.h[l][0] < this.h[s][0]) s = l;
+            if (r < n && this.h[r][0] < this.h[s][0]) s = r;
+            if (s === i) break;
+            [this.h[s], this.h[i]] = [this.h[i], this.h[s]];
+            i = s;
+          }
+        }
+        return top;
+      }
+    }
+
+    /* ===== Brandes' algorithm — weighted edge betweenness ===== */
+    function brandesEdgeBC(graph) {
+      const adj = new Map();
+      for (const node of graph.nodes) adj.set(node, []);
+      for (const e of graph.edges) {
+        adj.get(e.startNode).push({ target: e.endNode, weight: e.length, edgeId: e.id });
+        adj.get(e.endNode).push({ target: e.startNode, weight: e.length, edgeId: e.id });
+      }
+
+      const edgeBC = new Map();
+      for (const e of graph.edges) edgeBC.set(e.id, 0);
+
+      const nodeArr = Array.from(graph.nodes);
+      const EPS = 1e-9;
+
+      for (const s of nodeArr) {
+        const dist = new Map();
+        const sigma = new Map();
+        const pred = new Map();
+        const stack = [];
+
+        for (const v of nodeArr) {
+          dist.set(v, Infinity);
+          sigma.set(v, 0);
+          pred.set(v, []);
+        }
+        dist.set(s, 0);
+        sigma.set(s, 1);
+
+        const heap = new MinHeap();
+        heap.push([0, s]);
+
+        while (heap.size > 0) {
+          const [d, v] = heap.pop();
+          if (d > dist.get(v) + EPS) continue;
+          stack.push(v);
+
+          for (const { target: w, weight, edgeId } of adj.get(v)) {
+            const nd = dist.get(v) + weight;
+            const dw = dist.get(w);
+            if (nd < dw - EPS) {
+              dist.set(w, nd);
+              sigma.set(w, sigma.get(v));
+              pred.set(w, [{ node: v, edgeId }]);
+              heap.push([nd, w]);
+            } else if (nd < dw + EPS) {
+              sigma.set(w, sigma.get(w) + sigma.get(v));
+              pred.get(w).push({ node: v, edgeId });
             }
           }
         }
 
-        // A node shared by 2+ ways is an intersection
-        const intersections = Object.values(nodeCount).filter(c => c >= 2).length;
-        const density = intersections / areaKm2;
+        // Back-propagation: for each w in reverse-distance order
+        const delta = new Map();
+        for (const v of nodeArr) delta.set(v, 0);
 
-        statusEl.textContent = 'Done.';
-        countEl.textContent  = intersections.toLocaleString();
-        subEl.textContent    = `across ${wayCount.toLocaleString()} road segments`;
+        while (stack.length) {
+          const w = stack.pop();
+          const sw = sigma.get(w);
+          if (sw === 0) continue;
+          const dw = delta.get(w);
+          for (const { node: v, edgeId } of pred.get(w)) {
+            const c = (sigma.get(v) / sw) * (1 + dw);
+            delta.set(v, delta.get(v) + c);
+            edgeBC.set(edgeId, edgeBC.get(edgeId) + c);
+          }
+        }
+      }
 
-        document.getElementById('density').textContent = density.toFixed(1) + ' / km²';
-        document.getElementById('area').textContent    = `area: ${areaKm2.toFixed(3)} km²`;
+      // Undirected: each pair counted twice
+      for (const [k, v] of edgeBC) edgeBC.set(k, v / 2);
+      return edgeBC;
+    }
 
-        resultEl.style.display = 'block';
+    /* ===== Visualization ===== */
+    let stops = [];
+    const colors = chroma.scale(['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725']).colors(7);
 
-      } catch (err) {
-        statusEl.innerHTML = `<span class="error">&#9888; ${err.message}</span>`;
+    function colorForValue(v) {
+      for (let i = 0; i < stops.length - 1; i++) {
+        if (v <= stops[i + 1]) return colors[Math.min(i, colors.length - 1)];
+      }
+      return colors[colors.length - 1];
+    }
+
+    function widthForValue(v) {
+      for (let i = 0; i < stops.length - 1; i++) {
+        if (v <= stops[i + 1]) return 1.5 + (i / Math.max(1, stops.length - 2)) * 2.5;
+      }
+      return 4;
+    }
+
+    function renderEdges(edges, edgeValues) {
+      const values = Array.from(edgeValues.values()).sort((a, b) => a - b);
+      const n = colors.length;
+      stops = [];
+      for (let i = 0; i <= n; i++) {
+        stops.push(values[Math.floor(i * (values.length - 1) / n)]);
+      }
+
+      const metricLabel = METRICS[activeMetric()].label;
+      for (const e of edges) {
+        const v = edgeValues.get(e.id);
+        const polyline = L.polyline(
+          e.geometry.map(p => [p.lat, p.lon]),
+          {
+            color: colorForValue(v),
+            weight: widthForValue(v),
+            opacity: 0.85,
+            lineCap: 'round'
+          }
+        ).bindTooltip(
+          `<strong>${e.name || '(unnamed)'}</strong><br>${metricLabel}: ${formatMetricValue(v)}<br>Length: ${e.length.toFixed(0)} m`
+        );
+        edgesLayer.addLayer(polyline);
+      }
+    }
+
+    // Format a metric value with sensible precision based on its magnitude
+    function formatMetricValue(v) {
+      const abs = Math.abs(v);
+      if (abs === 0) return '0';
+      if (abs >= 100) return v.toFixed(0);
+      if (abs >= 10)  return v.toFixed(1);
+      if (abs >= 1)   return v.toFixed(2);
+      if (abs >= 0.01) return v.toFixed(3);
+      return v.toExponential(1);
+    }
+
+    function showStats(graph, edgeValues, fetchTime, buildTime, computeTime, metric) {
+      const values = Array.from(edgeValues.values()).sort((a, b) => a - b);
+      const sum = values.reduce((a, b) => a + b, 0);
+      const mean = sum / values.length;
+      const max = values[values.length - 1];
+
+      // Intersection count = nodes with degree >= 3 (real junctions, not dead-ends)
+      const degree = new Map();
+      for (const n of graph.nodes) degree.set(n, 0);
+      for (const e of graph.edges) {
+        degree.set(e.startNode, degree.get(e.startNode) + 1);
+        degree.set(e.endNode, degree.get(e.endNode) + 1);
+      }
+      let intersectionCount = 0;
+      for (const d of degree.values()) if (d >= 3) intersectionCount++;
+
+      const area = cache && cache.area ? cache.area : 0;
+      const density = area > 0 ? intersectionCount / area : 0;
+
+      document.getElementById('stat-intersections').textContent = intersectionCount.toLocaleString();
+      document.getElementById('stat-intersections-sub').textContent =
+        area > 0 ? `in ${area.toFixed(2)} km²` : '';
+      document.getElementById('stat-density').textContent = density.toFixed(0) + ' / km²';
+      document.getElementById('stat-density-sub').textContent =
+        graph.edges.length ? `${graph.edges.length.toLocaleString()} segments` : '';
+
+      document.getElementById('stat-nodes').textContent = graph.nodes.size.toLocaleString();
+      document.getElementById('stat-edges').textContent = graph.edges.length.toLocaleString();
+      document.getElementById('stat-mean').textContent  = formatMetricValue(mean);
+      document.getElementById('stat-max').textContent   = formatMetricValue(max);
+
+      const totalSec = (fetchTime + buildTime + computeTime) / 1000;
+      document.getElementById('stat-time').textContent = `${totalSec.toFixed(2)}s`;
+
+      // Update legend label to match active metric
+      document.getElementById('legend-label').textContent = metric.legend;
+
+      // Render legend bar from the same color array
+      const barEl = document.getElementById('legend-bar');
+      barEl.innerHTML = '';
+      for (const c of colors) {
+        const span = document.createElement('span');
+        span.style.backgroundColor = c;
+        barEl.appendChild(span);
+      }
+
+      // Legend ticks: show 5 quantile breakpoints
+      const tickEl = document.getElementById('legend-ticks');
+      tickEl.innerHTML = '';
+      const numTicks = 5;
+      for (let i = 0; i < numTicks; i++) {
+        const idx = Math.round(i * (stops.length - 1) / (numTicks - 1));
+        const span = document.createElement('span');
+        span.textContent = formatMetricValue(stops[idx]);
+        tickEl.appendChild(span);
       }
     }
   </script>
