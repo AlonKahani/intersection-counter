@@ -8,14 +8,18 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
     :root {
-      --primary: #2563eb;
-      --primary-dark: #1e40af;
-      --accent: #0d9488;
-      --text: #0f172a;
-      --text-muted: #64748b;
-      --border: #e2e8f0;
-      --surface: #f8fafc;
-      --error: #dc2626;
+      --primary: #475569;        /* slate-600 — neutral, no blue dominance */
+      --primary-dark: #334155;   /* slate-700 */
+      --accent: #64748b;         /* slate-500 */
+      --text: #0f172a;           /* slate-900 */
+      --text-muted: #64748b;     /* slate-500 */
+      --border: #e2e8f0;         /* slate-200 */
+      --surface: #f8fafc;        /* slate-50 */
+      --bg: #fafaf9;             /* warm-neutral background tint */
+      --error: #b91c1c;          /* red-700, slightly muted */
+      --highlight-from: rgba(71, 85, 105, 0.06);
+      --highlight-to:   rgba(15, 23, 42, 0.04);
+      --highlight-border: rgba(71, 85, 105, 0.22);
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -62,8 +66,8 @@
       width: 10px;
       height: 10px;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--primary), var(--accent));
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+      background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+      box-shadow: 0 0 0 3px rgba(71, 85, 105, 0.18);
     }
     #panel p.hint {
       font-size: 0.82rem;
@@ -108,7 +112,7 @@
     .metric-selector select:hover,
     .metric-selector select:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+      box-shadow: 0 0 0 3px rgba(71, 85, 105, 0.14);
     }
 
     .metric-desc {
@@ -194,8 +198,8 @@
       border-radius: 8px;
     }
     .stat-cell.highlight {
-      background: linear-gradient(135deg, rgba(37,99,235,0.06), rgba(13,148,136,0.06));
-      border-color: rgba(37,99,235,0.25);
+      background: linear-gradient(135deg, var(--highlight-from), var(--highlight-to));
+      border-color: var(--highlight-border);
     }
     .stat-cell .label {
       font-size: 0.65rem;
@@ -317,6 +321,25 @@
     <p class="hint">Draw a rectangle or polygon (≤2.5 km²) to count intersections, measure density, and analyze network metrics from OpenStreetMap.</p>
 
     <div class="metric-selector">
+      <label for="network-select">Network type</label>
+      <select id="network-select">
+        <option value="drivable">Drivable (default)</option>
+        <option value="walkable">Walkable</option>
+        <option value="cyclable">Cyclable</option>
+        <option value="all">All highways</option>
+      </select>
+    </div>
+
+    <div class="metric-selector">
+      <label for="weight-select">Edge weighting</label>
+      <select id="weight-select">
+        <option value="distance">Distance (meters)</option>
+        <option value="topological">Topological (steps)</option>
+        <option value="time">Travel time (seconds)</option>
+      </select>
+    </div>
+
+    <div class="metric-selector">
       <label for="metric-select">Analysis</label>
       <select id="metric-select">
         <option value="betweenness">Edge betweenness</option>
@@ -411,7 +434,7 @@
 
     const drawControl = new L.Control.Draw({
       draw: {
-        rectangle: { shapeOptions: { color: '#1a56db', weight: 2 } },
+        rectangle: { shapeOptions: { color: '#334155', weight: 2 } },
         polygon:   { shapeOptions: { color: '#1a56db', weight: 2 }, allowIntersection: false, showArea: false },
         polyline: false, circle: false, circlemarker: false, marker: false
       },
@@ -425,6 +448,48 @@
     const MIN_INTERVAL_MS = 3000;
     const MIN_COMPONENT_SIZE = 5;
     let lastQueryTime = 0;
+
+    // Network type filters (Overpass exclusion regex per type)
+    const NETWORK_TYPES = {
+      drivable: 'footway|cycleway|path|steps|service|track|proposed|construction|pedestrian|bridleway|corridor',
+      walkable: 'motorway|motorway_link|trunk_link|proposed|construction',
+      cyclable: 'motorway|motorway_link|footway|steps|corridor|proposed|construction',
+      all:      'proposed|construction'
+    };
+
+    // Approximate free-flow speeds (km/h) for the travel-time weighting
+    const HIGHWAY_SPEEDS_KMH = {
+      motorway: 110, motorway_link: 60,
+      trunk: 90,     trunk_link: 50,
+      primary: 60,   primary_link: 40,
+      secondary: 50, secondary_link: 40,
+      tertiary: 40,  tertiary_link: 30,
+      unclassified: 30,
+      residential: 30,
+      living_street: 15,
+      pedestrian: 5,
+      service: 20,
+      footway: 5, path: 5, steps: 2,
+      cycleway: 15,
+      track: 20, road: 30
+    };
+
+    function activeNetworkType() { return document.getElementById('network-select').value; }
+    function activeWeightMode()  { return document.getElementById('weight-select').value; }
+
+    function edgeWeight(edge, weightMode) {
+      switch (weightMode) {
+        case 'topological': return 1;
+        case 'time': {
+          const speedKmh = HIGHWAY_SPEEDS_KMH[edge.highway] || 30;
+          const speedMs  = speedKmh * 1000 / 3600;
+          return edge.length / speedMs; // seconds
+        }
+        case 'distance':
+        default:
+          return edge.length;
+      }
+    }
 
     /* ===== Geometry helpers ===== */
     function latLngsOf(layer) {
@@ -543,29 +608,33 @@
         label: 'Edge betweenness',
         legend: 'Edge betweenness (quantile)',
         description: 'Streets carrying the most shortest paths between random points — the network\'s "main arteries".',
-        compute: (graph) => brandesEdgeBC(graph),
-        kind: 'edge'
+        compute: (graph, weightMode) => brandesEdgeBC(graph, weightMode),
+        kind: 'edge',
+        usesWeight: true
       },
       closeness: {
         label: 'Closeness',
-        legend: 'Closeness × 1000 (quantile)',
+        legend: 'Closeness (quantile)',
         description: 'Most accessible intersections — those with the lowest average travel distance to all others. Inverse of mean shortest-path distance.',
-        compute: (graph) => closenessCentrality(graph),
-        kind: 'node'
+        compute: (graph, weightMode) => closenessCentrality(graph, weightMode),
+        kind: 'node',
+        usesWeight: true
       },
       degree: {
         label: 'Degree',
         legend: 'Degree (number of streets)',
-        description: 'Local connectivity — how many streets meet at each intersection. Highest values mark the most-connected junctions.',
+        description: 'Local connectivity — how many streets meet at each intersection. Highest values mark the most-connected junctions. (Edge weighting does not affect this metric.)',
         compute: (graph) => degreeCentrality(graph),
-        kind: 'node'
+        kind: 'node',
+        usesWeight: false
       },
       straightness: {
         label: 'Straightness',
         legend: 'Straightness (0–1, quantile)',
-        description: 'How direct routes are. High = the shortest network path closely follows the crow-flight line. Low = winding, indirect connectivity.',
+        description: 'How direct routes are. High = the shortest network path closely follows the crow-flight line. Low = winding, indirect connectivity. (Always uses distance weighting — units must match euclidean meters.)',
         compute: (graph) => straightnessCentrality(graph),
-        kind: 'node'
+        kind: 'node',
+        usesWeight: false
       }
     };
 
@@ -582,12 +651,13 @@
 
     /* ===== Metric implementations ===== */
 
-    function buildAdjacency(graph) {
+    function buildAdjacency(graph, weightMode = 'distance') {
       const adj = new Map();
       for (const node of graph.nodes) adj.set(node, []);
       for (const e of graph.edges) {
-        adj.get(e.startNode).push({ target: e.endNode, weight: e.length });
-        adj.get(e.endNode).push({ target: e.startNode, weight: e.length });
+        const w = edgeWeight(e, weightMode);
+        adj.get(e.startNode).push({ target: e.endNode, weight: w });
+        adj.get(e.endNode).push({ target: e.startNode, weight: w });
       }
       return adj;
     }
@@ -622,10 +692,12 @@
       return result;
     }
 
-    function closenessCentrality(graph) {
-      const adj = buildAdjacency(graph);
+    function closenessCentrality(graph, weightMode = 'distance') {
+      const adj = buildAdjacency(graph, weightMode);
       const nodeArr = Array.from(graph.nodes);
       const result = new Map();
+      // Scaling so values stay readable: ×1000 for distance, ×1 for steps, ×1 for seconds
+      const scale = weightMode === 'distance' ? 1000 : 1;
       for (const s of nodeArr) {
         const dist = dijkstra(s, adj, nodeArr);
         let sumDist = 0, reachable = 0;
@@ -635,10 +707,9 @@
             reachable++;
           }
         }
-        // Wasserman–Faust closeness, scaled ×1000 for readable values (m → ~1/km)
         if (sumDist > 0) {
           const wf = (reachable / (nodeArr.length - 1)) * (reachable / sumDist);
-          result.set(s, wf * 1000);
+          result.set(s, wf * scale);
         } else {
           result.set(s, 0);
         }
@@ -647,7 +718,9 @@
     }
 
     function straightnessCentrality(graph) {
-      const adj = buildAdjacency(graph);
+      // Always use distance weighting — comparing network distance to euclidean meters,
+      // so units must match.
+      const adj = buildAdjacency(graph, 'distance');
       const nodeArr = Array.from(graph.nodes);
       const result = new Map();
       for (const s of nodeArr) {
@@ -688,15 +761,17 @@
       resultEl.style.display = 'none';
 
       try {
+        const networkType = activeNetworkType();
         const key = shapeKey(latlngs);
         let fetchTime = 0, buildTime = 0;
 
-        // Reuse cache if same shape
-        if (!cache || cache.shapeKey !== key) {
+        // Reuse cache if same shape AND same network type
+        if (!cache || cache.shapeKey !== key || cache.networkType !== networkType) {
           const polyStr = latlngs
             .map(p => `${p.lat.toFixed(6)} ${p.lng.toFixed(6)}`)
             .join(' ');
-          const query = `[out:json][timeout:30];way[highway][highway!~"footway|cycleway|path|steps|service|track|proposed|construction"](poly:"${polyStr}");out geom;`;
+          const exclude = NETWORK_TYPES[networkType];
+          const query = `[out:json][timeout:30];way[highway][highway!~"${exclude}"](poly:"${polyStr}");out geom;`;
 
           const t0 = performance.now();
           const data = await fetchOverpass(query, statusEl);
@@ -720,7 +795,7 @@
           }
 
           const area = polygonAreaKm2(latlngs);
-          cache = { shapeKey: key, graph, consolidated: null, fetchTime, buildTime, area };
+          cache = { shapeKey: key, networkType, graph, consolidated: null, fetchTime, buildTime, area };
         }
 
         await computeAndRender(statusEl, resultEl, fetchTime, buildTime);
@@ -751,12 +826,14 @@
 
       const metricKey = activeMetric();
       const metric = METRICS[metricKey];
+      const weightMode = activeWeightMode();
 
-      statusEl.innerHTML = `<span class="spinner"></span>Computing ${metric.label.toLowerCase()} for ${graph.nodes.size} nodes...`;
+      const weightLabel = metric.usesWeight ? ` (${weightMode})` : '';
+      statusEl.innerHTML = `<span class="spinner"></span>Computing ${metric.label.toLowerCase()}${weightLabel} for ${graph.nodes.size} nodes...`;
       await new Promise(r => setTimeout(r, 50));
 
       const t2 = performance.now();
-      const raw = metric.compute(graph);
+      const raw = metric.compute(graph, weightMode);
       const computeTime = performance.now() - t2;
 
       const edgeValues = metric.kind === 'edge'
@@ -794,6 +871,24 @@
         const statusEl = document.getElementById('status');
         const resultEl = document.getElementById('result');
         await computeAndRender(statusEl, resultEl, 0, 0);
+      }
+    });
+
+    /* ===== Weight mode change — recompute on cached graph (no re-fetch) ===== */
+    document.getElementById('weight-select').addEventListener('change', async () => {
+      if (cache && cache.graph) {
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+        await computeAndRender(statusEl, resultEl, 0, 0);
+      }
+    });
+
+    /* ===== Network type change — invalidates cache, requires re-fetch ===== */
+    document.getElementById('network-select').addEventListener('change', async () => {
+      const layers = drawnItems.getLayers();
+      if (layers.length > 0) {
+        // Re-run the analysis on the existing shape with the new network filter
+        runAnalysis(latLngsOf(layers[0]));
       }
     });
 
@@ -1049,12 +1144,13 @@
     }
 
     /* ===== Brandes' algorithm — weighted edge betweenness ===== */
-    function brandesEdgeBC(graph) {
+    function brandesEdgeBC(graph, weightMode = 'distance') {
       const adj = new Map();
       for (const node of graph.nodes) adj.set(node, []);
       for (const e of graph.edges) {
-        adj.get(e.startNode).push({ target: e.endNode, weight: e.length, edgeId: e.id });
-        adj.get(e.endNode).push({ target: e.startNode, weight: e.length, edgeId: e.id });
+        const w = edgeWeight(e, weightMode);
+        adj.get(e.startNode).push({ target: e.endNode, weight: w, edgeId: e.id });
+        adj.get(e.endNode).push({ target: e.startNode, weight: w, edgeId: e.id });
       }
 
       const edgeBC = new Map();
